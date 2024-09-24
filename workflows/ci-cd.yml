@@ -1,0 +1,89 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - production
+      - demo
+      - test
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.8'
+
+      - name: Build backend Docker image
+        run: |
+          cd backend
+          docker build -t bulayoung/backend-image:${{ github.sha }} .
+
+      - name: Build frontend Docker image
+        run: |
+          cd frontend
+          docker build -t bulayoung/frontend-image:${{ github.sha }} .
+
+      - name: Log in to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "bulayoung" --password-stdin
+
+      - name: Push backend Docker image
+        run: docker push bulayoung/backend-image:${{ github.sha }}
+
+      - name: Push frontend Docker image
+        run: docker push bulayoung/frontend-image:${{ github.sha }}
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          pytest
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/test' || github.ref == 'refs/heads/demo' || github.ref == 'refs/heads/production'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v1
+        with:
+          version: 'v1.21.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
+
+      - name: Deploy to Testing
+        if: github.ref == 'refs/heads/test'
+        run: |
+          kubectl set image deployment/backend-deployment backend=bulayoung/backend-image:${{ github.sha }} -n backend
+          kubectl patch deployment/backend-deployment -n backend -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodepool":"test-nodepool"}}}}}'
+          kubectl set image deployment/frontend-deployment frontend=bulayoung/frontend-image:${{ github.sha }} -n frontend
+          kubectl patch deployment/frontend-deployment -n frontend -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodepool":"test-nodepool"}}}}}'
+
+      - name: Deploy to Demo
+        if: github.ref == 'refs/heads/demo'
+        run: |
+          kubectl set image deployment/backend-deployment backend=bulayoung/backend-image:${{ github.sha }} -n backend
+          kubectl patch deployment/backend-deployment -n backend -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodepool":"demo-nodepool"}}}}}'
+          kubectl set image deployment/frontend-deployment frontend=bulayoung/frontend-image:${{ github.sha }} -n frontend
+          kubectl patch deployment/frontend-deployment -n frontend -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodepool":"demo-nodepool"}}}}}'
+
+      - name: Deploy to Production
+        if: github.ref == 'refs/heads/production'
+        run: |
+          kubectl set image deployment/backend-deployment backend=bulayoung/backend-image:${{ github.sha }} -n backend
+          kubectl patch deployment/backend-deployment -n backend -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodepool":"production-nodepool"}}}}}'
+          kubectl set image deployment/frontend-deployment frontend=bulayoung/frontend-image:${{ github.sha }} -n frontend
+          kubectl patch deployment/frontend-deployment -n frontend -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodepool":"production-nodepool"}}}}}'
+
